@@ -1,3 +1,5 @@
+# Webcam Kinect Emulator🔴📷
+
 This is my personal project that emulates live kinect capabilities using only cheap webcam, it mimics fundamental kinect 
 capabilties like smooth full body movement and Approximiate 3D Location.
 It uses MediaPipe and Depth-Anything-V2 and makes them work simultaneously for both real-time pose estimation and monocular depth prediction to get the approximiate x,y,z data

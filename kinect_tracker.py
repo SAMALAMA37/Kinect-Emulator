@@ -5,6 +5,10 @@ import numpy as np
 from PIL import Image
 from transformers import AutoImageProcessor, AutoModelForDepthEstimation
 import time
+import warnings
+
+# Suppress protobuf deprecation warning
+warnings.filterwarnings("ignore", category=UserWarning, module="google.protobuf.symbol_database")
 
 # Parameters
 depth_model_id = "depth-anything/Depth-Anything-V2-Small-hf"
@@ -93,7 +97,9 @@ while cap.isOpened():
         roi_y2 = min(resized_h, roi_y2 + ROI_PADDING)
     else:
         roi_x1, roi_y1, roi_x2, roi_y2 = 0, 0, resized_w, resized_h
-    cropped_img_rgb = img_rgb[roi_y1:roi_y2, roi_x1:roi_x2]
+
+    # Ensure cropped_img_rgb is C-contiguous
+    cropped_img_rgb = np.ascontiguousarray(img_rgb[roi_y1:roi_y2, roi_x1:roi_x2])
 
     if cropped_img_rgb.size > 0:
         cropped_img_rgb.flags.writeable = False

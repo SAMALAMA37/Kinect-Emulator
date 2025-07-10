@@ -6,7 +6,7 @@ from PIL import Image
 from transformers import AutoImageProcessor, AutoModelForDepthEstimation
 import time
 
-# parameters
+# Parameters
 depth_model_id = "depth-anything/Depth-Anything-V2-Small-hf"
 
 ROI_DEPTH_THRESHOLD_MIN = 0.5
@@ -39,6 +39,7 @@ print("MediaPipe Pose model loaded.")
 
 smoothed_positions = {}
 last_frame_time = time.time()
+scale_factor = 0.5  # Resize factor for faster processing
 
 cap = cv2.VideoCapture(0)
 if not cap.isOpened():
@@ -47,7 +48,6 @@ if not cap.isOpened():
 
 print("\nStarting AI Kinect Lite. Press 'q' to quit.")
 
-
 def is_valid_landmark(landmark, depth_value, visibility_threshold):
     if landmark.visibility < visibility_threshold:
         return False
@@ -55,22 +55,22 @@ def is_valid_landmark(landmark, depth_value, visibility_threshold):
         return False
     return True
 
-
 while cap.isOpened():
     ret, frame = cap.read()
     if not ret:
         break
 
     current_frame_time = time.time()
-    delta_time = current_frame_time - last_frame_time
-    if delta_time == 0:
-        delta_time = 1e-6
+    delta_time = current_frame_time - last_frame_time or 1e-6
     fps = 1 / delta_time
     last_frame_time = current_frame_time
 
     original_h, original_w, _ = frame.shape
-    img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    original_frame = frame.copy()  # Keep original for display
+    frame = cv2.resize(frame, (0, 0), fx=scale_factor, fy=scale_factor)
+    resized_h, resized_w, _ = frame.shape
 
+    img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     pil_img = Image.fromarray(img_rgb)
     inputs = image_processor(images=pil_img, return_tensors="pt").to(device)
     with torch.no_grad():
@@ -81,21 +81,19 @@ while cap.isOpened():
         ).squeeze()
     depth_map = prediction_resized.cpu().numpy()
 
-    person_mask = ((depth_map > ROI_DEPTH_THRESHOLD_MIN) & (depth_map < ROI_DEPTH_THRESHOLD_MAX)).astype(np.uint8) * 255
-    contours, _ = cv2.findContours(person_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    roi_x1, roi_y1, roi_x2, roi_y2 = 0, 0, original_w, original_h
-    cropped_img_rgb = img_rgb
-
-    if contours:
-        largest_contour = max(contours, key=cv2.contourArea)
-        if cv2.contourArea(largest_contour) > 500:
-            x, y, w_roi, h_roi = cv2.boundingRect(largest_contour)
-            roi_x1 = max(0, x - ROI_PADDING)
-            roi_y1 = max(0, y - ROI_PADDING)
-            roi_x2 = min(original_w, x + w_roi + ROI_PADDING)
-            roi_y2 = min(original_h, y + h_roi + ROI_PADDING)
-            cropped_img_rgb = img_rgb[roi_y1:roi_y2, roi_x1:roi_x2]
+    # Optimized ROI detection using np.where
+    mask = (depth_map > ROI_DEPTH_THRESHOLD_MIN) & (depth_map < ROI_DEPTH_THRESHOLD_MAX)
+    if np.any(mask):
+        rows, cols = np.where(mask)
+        roi_y1, roi_y2 = np.min(rows), np.max(rows)
+        roi_x1, roi_x2 = np.min(cols), np.max(cols)
+        roi_x1 = max(0, roi_x1 - ROI_PADDING)
+        roi_y1 = max(0, roi_y1 - ROI_PADDING)
+        roi_x2 = min(resized_w, roi_x2 + ROI_PADDING)
+        roi_y2 = min(resized_h, roi_y2 + ROI_PADDING)
+    else:
+        roi_x1, roi_y1, roi_x2, roi_y2 = 0, 0, resized_w, resized_h
+    cropped_img_rgb = img_rgb[roi_y1:roi_y2, roi_x1:roi_x2]
 
     if cropped_img_rgb.size > 0:
         cropped_img_rgb.flags.writeable = False
@@ -104,22 +102,26 @@ while cap.isOpened():
     else:
         results = None
 
-    frame_display = frame.copy()
+    frame_display = original_frame.copy()
     final_keypoints_3d = {}
 
     if results and results.pose_landmarks:
         for idx, landmark in enumerate(results.pose_landmarks.landmark):
             joint_name = mp_pose.PoseLandmark(idx).name
 
-            px_cropped = int(landmark.x * cropped_img_rgb.shape[1])
-            py_cropped = int(landmark.y * cropped_img_rgb.shape[0])
-            px_original = px_cropped + roi_x1
-            py_original = py_cropped + roi_y1
+            px_cropped = landmark.x * cropped_img_rgb.shape[1]
+            py_cropped = landmark.y * cropped_img_rgb.shape[0]
+            x_resized = roi_x1 + px_cropped
+            y_resized = roi_y1 + py_cropped
+            px_original = x_resized / scale_factor
+            py_original = y_resized / scale_factor
 
             raw_depth = -1.0
-            if 0 <= px_original < original_w and 0 <= py_original < original_h:
-                y_start, y_end = max(0, py_original - PATCH_RADIUS), min(original_h, py_original + PATCH_RADIUS)
-                x_start, x_end = max(0, px_original - PATCH_RADIUS), min(original_w, px_original + PATCH_RADIUS)
+            if 0 <= x_resized < resized_w and 0 <= y_resized < resized_h:
+                y_start = max(0, int(y_resized) - PATCH_RADIUS)
+                y_end = min(resized_h, int(y_resized) + PATCH_RADIUS)
+                x_start = max(0, int(x_resized) - PATCH_RADIUS)
+                x_end = min(resized_w, int(x_resized) + PATCH_RADIUS)
                 patch = depth_map[y_start:y_end, x_start:x_end]
                 valid_depths = patch[np.isfinite(patch) & (patch > 0)]
                 if valid_depths.size > 0:
@@ -175,8 +177,12 @@ while cap.isOpened():
 
     depth_display = cv2.normalize(depth_map, None, 255, 0, cv2.NORM_MINMAX, cv2.CV_8U)
     depth_display = cv2.cvtColor(depth_display, cv2.COLOR_GRAY2BGR)
+    depth_display = cv2.resize(depth_display, (original_w, original_h))  # Resize depth for display
 
-    cv2.rectangle(frame_display, (roi_x1, roi_y1), (roi_x2, roi_y2), (0, 255, 255), 2)
+    cv2.rectangle(frame_display, 
+                  (int(roi_x1 / scale_factor), int(roi_y1 / scale_factor)), 
+                  (int(roi_x2 / scale_factor), int(roi_y2 / scale_factor)), 
+                  (0, 255, 255), 2)
     cv2.putText(frame_display, f"FPS: {fps:.1f}", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
     combined_display = np.concatenate((frame_display, depth_display), axis=1)

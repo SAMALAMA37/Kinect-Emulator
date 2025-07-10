@@ -99,3 +99,10 @@ Troubleshooting
 - **Cannot open camera:** Ensure your webcam is connected and not being used by another application.
 - **CUDA errors:** If you do not have a compatible GPU, the script will fall back to CPU automatically (it will be slower).
 - **ModuleNotFoundError:** Double-check that all dependencies are installed and that your venv is activated.
+
+
+--- 
+
+Current problems:
+
+- Depth Anything model is analyzing each frame indepedently, without taking other frames into context, cuz of that Z value is really jumpy (like 0.2m most of the time)

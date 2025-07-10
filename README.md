@@ -106,3 +106,4 @@ Troubleshooting
 Current problems:
 
 - Depth Anything model is analyzing each frame indepedently, without taking other frames into context, cuz of that Z value is really jumpy (like 0.2m most of the time)
+- optymalization💔💔

@@ -3,15 +3,17 @@ import torch
 import mediapipe as mp
 import numpy as np
 from PIL import Image
-from transformers import AutoImageProcessor, AutoModelForDepthEstimation
+from transformers import AutoImageProcessor, AutoModelForDepthEstimation, Dinov2Backbone
 import time
 import warnings
+from collections import deque
 
 # Suppress protobuf deprecation warning
 warnings.filterwarnings("ignore", category=UserWarning, module="google.protobuf.symbol_database")
 
 # Parameters
 depth_model_id = "depth-anything/Depth-Anything-V2-Small-hf"
+NUM_FRAMES = 3  # Number of frames to stack for temporal context
 
 ROI_DEPTH_THRESHOLD_MIN = 0.5
 ROI_DEPTH_THRESHOLD_MAX = 5.0
@@ -27,12 +29,63 @@ print("Loading Depth-Anything-V2 model...")
 try:
     image_processor = AutoImageProcessor.from_pretrained(depth_model_id)
     depth_model = AutoModelForDepthEstimation.from_pretrained(depth_model_id)
+    
+    # --- Start of Definitive Model Modification ---
+
+    # 1. Get the original backbone and its configuration
+    original_backbone = depth_model.backbone
+    backbone_config = original_backbone.config
+    
+    # 2. Modify the configuration to accept 9 channels
+    new_in_channels = 3 * NUM_FRAMES
+    backbone_config.num_channels = new_in_channels
+    depth_model.config.num_channels = new_in_channels # Also update the main model's config
+
+    # 3. Create a new backbone from the modified configuration
+    new_backbone = Dinov2Backbone(backbone_config)
+
+    # 4. Load the state dictionary (weights) from the original backbone
+    original_state_dict = original_backbone.state_dict()
+    new_state_dict = new_backbone.state_dict()
+
+    # 5. Manually handle the input projection layer due to shape mismatch
+    proj_weight_key = "embeddings.patch_embeddings.projection.weight"
+    original_proj_weight = original_state_dict[proj_weight_key] # Shape: [384, 3, 14, 14]
+    
+    # Replicate the weights for the 9 channels
+    new_proj_weight = torch.cat([original_proj_weight] * NUM_FRAMES, dim=1)
+    
+    # Update the new state dict with this custom weight
+    new_state_dict[proj_weight_key] = new_proj_weight
+
+    # Copy all other weights that match
+    for key in new_state_dict.keys():
+        if key != proj_weight_key and key in original_state_dict and new_state_dict[key].shape == original_state_dict[key].shape:
+            new_state_dict[key] = original_state_dict[key]
+            
+    # Also handle the bias if it exists
+    proj_bias_key = "embeddings.patch_embeddings.projection.bias"
+    if proj_bias_key in original_state_dict:
+        new_state_dict[proj_bias_key] = original_state_dict[proj_bias_key]
+
+    # 6. Load the modified state dictionary into the new backbone
+    new_backbone.load_state_dict(new_state_dict)
+
+    # 7. Replace the old backbone with the new one
+    depth_model.backbone = new_backbone
+
+    print(f"Model backbone rebuilt to accept {new_in_channels} input channels.")
+    # --- End of Model Modification ---
+
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     depth_model.to(device)
     depth_model.eval()
     print(f"Depth-Anything-V2 model loaded to {device}.")
 except Exception as e:
-    print(f"Error loading Depth-Anything model: {e}")
+    print(f"Error loading or modifying Depth-Anything model: {e}")
+    # Print traceback for detailed debugging
+    import traceback
+    traceback.print_exc()
     exit()
 
 print("Loading MediaPipe Pose model...")
@@ -43,7 +96,10 @@ print("MediaPipe Pose model loaded.")
 
 smoothed_positions = {}
 last_frame_time = time.time()
-scale_factor = 0.5  # Resize factor for faster processing
+scale_factor = 0.8  # Resize factor for faster processing
+
+# Frame buffer to hold the last NUM_FRAMES frames
+frame_buffer = deque(maxlen=NUM_FRAMES)
 
 cap = cv2.VideoCapture(0)
 if not cap.isOpened():
@@ -75,10 +131,27 @@ while cap.isOpened():
     resized_h, resized_w, _ = frame.shape
 
     img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    pil_img = Image.fromarray(img_rgb)
-    inputs = image_processor(images=pil_img, return_tensors="pt").to(device)
+
+    # Add the current frame to the buffer
+    frame_buffer.append(img_rgb)
+
+    # Wait until the buffer is full before processing
+    if len(frame_buffer) < NUM_FRAMES:
+        continue
+
+    # --- Start of Multi-frame Input Preparation ---
+    # Stack frames from the buffer along the channel dimension
+    stacked_frames = np.concatenate(list(frame_buffer), axis=2)
+
+    # Manually preprocess and create the tensor
+    # The shape should be [1, 9, H, W] for 3 frames
+    input_tensor = torch.from_numpy(stacked_frames).permute(2, 0, 1).unsqueeze(0)
+    input_tensor = input_tensor.to(torch.float32) / 255.0
+    input_tensor = input_tensor.to(device)
+    # --- End of Multi-frame Input Preparation ---
+
     with torch.no_grad():
-        outputs = depth_model(**inputs)
+        outputs = depth_model(pixel_values=input_tensor)
         predicted_depth = outputs.predicted_depth
         prediction_resized = torch.nn.functional.interpolate(
             predicted_depth.unsqueeze(1), size=img_rgb.shape[:2], mode="bicubic", align_corners=False
@@ -99,7 +172,9 @@ while cap.isOpened():
         roi_x1, roi_y1, roi_x2, roi_y2 = 0, 0, resized_w, resized_h
 
     # Ensure cropped_img_rgb is C-contiguous
-    cropped_img_rgb = np.ascontiguousarray(img_rgb[roi_y1:roi_y2, roi_x1:roi_x2])
+    # We use the most recent frame for pose detection
+    latest_frame_for_pose = frame_buffer[-1]
+    cropped_img_rgb = np.ascontiguousarray(latest_frame_for_pose[roi_y1:roi_y2, roi_x1:roi_x2])
 
     if cropped_img_rgb.size > 0:
         cropped_img_rgb.flags.writeable = False
@@ -183,7 +258,7 @@ while cap.isOpened():
 
     depth_display = cv2.normalize(depth_map, None, 255, 0, cv2.NORM_MINMAX, cv2.CV_8U)
     depth_display = cv2.cvtColor(depth_display, cv2.COLOR_GRAY2BGR)
-    depth_display = cv2.resize(depth_display, (original_w, original_h))  # Resize depth for display
+    depth_display = cv2.resize(depth_display, (original_w, original_h))
 
     cv2.rectangle(frame_display, 
                   (int(roi_x1 / scale_factor), int(roi_y1 / scale_factor)), 
@@ -192,7 +267,7 @@ while cap.isOpened():
     cv2.putText(frame_display, f"FPS: {fps:.1f}", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
     combined_display = np.concatenate((frame_display, depth_display), axis=1)
-    cv2.imshow('AI Kinect Lite | Pose & Depth', combined_display)
+    cv2.imshow('AI Kinect Lite | Pose & Depth (Temporal)', combined_display)
 
     if cv2.waitKey(5) & 0xFF == ord('q'):
         break

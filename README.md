@@ -98,7 +98,7 @@ Troubleshooting
 
 - **Cannot open camera:** Ensure your webcam is connected and not being used by another application.
 - **CUDA errors:** If you do not have a compatible GPU, the script will fall back to CPU automatically (it will be slower).
-- **ModuleNotFoundError:** Double-check that all dependencies are installed and that your venv is activated.
+- **ModuleNotFoundError:** Double-check that all dependencies are installed.
 
 
 --- 

@@ -9,6 +9,8 @@ It uses MediaPipe and Depth-Anything-V2 and makes them work simultaneously for b
 Average webcam speed is 10fps, if you have less than that (like 5), make sure you have CUDA installed, you can check this by running pre-prepared script called "test.py"
 
 
+If someones reading this you can finetune the model to operate the new backbone, i tried to do it on NYU Depth V2 Data that contains kinect footage along with depth maps, but unfortunately no skill and chatgpt aint enough for that
+
 ## Prerequisites
 
 - **Operating System:** Windows, macOS, or Linux

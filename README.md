@@ -106,7 +106,3 @@ Troubleshooting
 
 --- 
 
-Current problems:
-
-- ~~Depth Anything model is analyzing each frame indepedently, without taking other frames into context, cuz of that Z value is really jumpy (like 0.2m most of the time)~~ added somewhat of a fix, the model should now receive both previous and next frame in a timeline for a context
-- optymalization💔💔

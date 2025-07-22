@@ -4,7 +4,7 @@ This is my personal project that emulates live kinect capabilities using only ch
 capabilties like smooth full body movement and Approximiate 3D Location.
 It uses MediaPipe and Depth-Anything-V2 and makes them work simultaneously for both real-time pose estimation and monocular depth prediction to get the approximiate x,y,z data
 
-- Important to note that it only tries to replicate the fundamental kinect functionality using only a web cam, and as a result, it does not achieve 100% accuracy like the original Kinect.
+- Important to note that it only tries to replicate the fundamental kinect functionality using only a webcam, and as a result, it does not achieve 100% accuracy like the original Kinect.
 
 Average webcam speed is 10fps, if you have less than that (like 5), make sure you have CUDA installed, you can check this by running pre-prepared script called "test.py"
 

@@ -11,7 +11,6 @@ Average webcam speed is 10fps, if you have less than that (like 5), make sure yo
 
 If someones reading this you can finetune the model to operate the new backbone better, i tried to do it on NYU Depth V2 Data that contains kinect footage along with depth maps, but unfortunately no skill and chatgpt aint enough for that
 
-After entire week of loop errors i written somewhat working of a code, prolly wasted 2k galoons of water for asking obvious shit to ai, but with help of claude opus 4 i barely made that working, its visible on trainer.py btw
 
 ## Prerequisites
 
